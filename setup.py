@@ -22,6 +22,10 @@ tornado_requires = [
     "toro>=0.6"
 ]
 
+asyncio_requires = [
+    "async_timeout>=1.2.1"
+]
+
 dev_requires = [
     "cython>=0.23",
     "flake8>=2.5",
@@ -81,7 +85,8 @@ setup(name="thriftpy",
       tests_require=tornado_requires,
       extras_require={
           "dev": dev_requires,
-          "tornado": tornado_requires
+          "tornado": tornado_requires,
+          "asyncio": asyncio_requires
       },
       cmdclass=cmdclass,
       ext_modules=ext_modules,
