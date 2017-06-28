@@ -39,6 +39,18 @@ class TAsyncTransport(TMemoryBuffer):
             yield from self._trans.drain()
 
 
+class TAsyncReader(TAsyncTransport):
+    def close(self):
+        self._trans.feed_eof()
+        super().close()
+
+
+class TAsyncWriter(TAsyncTransport):
+    def close(self):
+        self._trans.write_eof()
+        super().close()
+
+
 class TAsyncProcessor(TProcessor):
     def __init__(self, service, handler):
         self._service = service
@@ -79,10 +91,10 @@ class TAsyncServer(object):
 
     @asyncio.coroutine
     def __call__(self, reader, writer):
-        itrans = TAsyncTransport(reader)
+        itrans = TAsyncReader(reader)
         iproto = self.iprot_factory.get_protocol(itrans)
 
-        otrans = TAsyncTransport(writer)
+        otrans = TAsyncWriter(writer)
         oproto = self.oprot_factory.get_protocol(otrans)
 
         while not reader.at_eof():
@@ -128,6 +140,7 @@ class TAsyncClient(TClient):
                 return self._recv(_api)
 
     def close(self):
+        self._iprot.trans.close()
         self._oprot.trans.close()
 
 
@@ -165,9 +178,9 @@ def make_client(service,
     reader, writer = yield from asyncio.open_connection(
         host, port, loop=loop)
 
-    itrans = TAsyncTransport(reader)
+    itrans = TAsyncReader(reader)
     iproto = proto_factory.get_protocol(itrans)
 
-    otrans = TAsyncTransport(writer)
+    otrans = TAsyncWriter(writer)
     oproto = proto_factory.get_protocol(otrans)
     return TAsyncClient(service, iproto, oproto)

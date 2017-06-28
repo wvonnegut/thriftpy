@@ -6,11 +6,12 @@ from os import path
 
 import thriftpy
 from thriftpy.contrib.async import make_client, make_server
+from thriftpy.rpc import make_client as make_sync_client
+from thriftpy.transport import TFramedTransportFactory
 
 import pytest
 import asyncio
-
-pytestmark = pytest.mark.asyncio
+import threading
 
 addressbook = thriftpy.load(path.join(path.dirname(__file__),
                                       "addressbook.thrift"))
@@ -54,36 +55,81 @@ class Dispatcher(object):
         return True
 
 
-@pytest.fixture
-async def client(request):
-    server = await make_server(addressbook.AddressBookService, Dispatcher())
-    client = await make_client(addressbook.AddressBookService)
+class Server(threading.Thread):
+    def __init__(self):
+        self.loop = loop = asyncio.new_event_loop()
+        self.server = loop.run_until_complete(make_server(
+            service=addressbook.AddressBookService,
+            handler=Dispatcher(),
+            loop=loop
+        ))
+        super().__init__()
 
-    def teardown():
-        client.close()
+    def run(self):
+        loop = self.loop
+        server = self.server
+        asyncio.set_event_loop(loop)
+
+        loop.run_forever()
+
         server.close()
-        loop = asyncio.get_event_loop()
         loop.run_until_complete(server.wait_closed())
-    request.addfinalizer(teardown)
 
-    return client
+        loop.close()
 
-
-async def test_async_result(client):
-    dennis = addressbook.Person(name='Dennis Ritchie')
-    success = await client.add(dennis)
-    assert success
-    success = await client.add(dennis)
-    assert not success
-    person = await client.get(dennis.name)
-    assert person.name == dennis.name
+    def stop(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.join()
 
 
-async def test_async_exception(client):
-    exc = None
-    try:
-        await client.get('Brian Kernighan')
-    except Exception as e:
-        exc = e
+@pytest.fixture
+def server():
+    server = Server()
+    server.start()
+    yield server
+    server.stop()
 
-    assert isinstance(exc, addressbook.PersonNotExistsError)
+
+class TestAsyncClient:
+    @pytest.fixture
+    async def client(self, request, server):
+        client = await make_client(addressbook.AddressBookService)
+        request.addfinalizer(client.close)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_result(self, client):
+        dennis = addressbook.Person(name='Dennis Ritchie')
+        success = await client.add(dennis)
+        assert success
+        success = await client.add(dennis)
+        assert not success
+        person = await client.get(dennis.name)
+        assert person.name == dennis.name
+
+    @pytest.mark.asyncio
+    async def test_exception(self, client):
+        with pytest.raises(addressbook.PersonNotExistsError):
+            await client.get('Brian Kernighan')
+
+
+class TestSyncClient:
+    @pytest.fixture
+    async def client(self, request, server):
+        client = make_sync_client(addressbook.AddressBookService,
+                                  trans_factory=TFramedTransportFactory())
+        request.addfinalizer(client.close)
+        return client
+
+    def test_result(self, client):
+        dennis = addressbook.Person(name='Dennis Ritchie')
+        success = client.add(dennis)
+        assert success
+        success = client.add(dennis)
+        assert not success
+        person = client.get(dennis.name)
+        assert person.name == dennis.name
+
+    def test_exception(self, client):
+        with pytest.raises(addressbook.PersonNotExistsError):
+            client.get('Brian Kernighan')
