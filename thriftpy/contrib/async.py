@@ -3,7 +3,6 @@ from thriftpy.transport import TMemoryBuffer
 from thriftpy.protocol import TBinaryProtocolFactory
 
 import asyncio
-import async_timeout
 import struct
 
 import logging
@@ -99,8 +98,8 @@ class TAsyncServer(object):
 
         while not reader.at_eof():
             try:
-                with async_timeout.timeout(self.timeout):
-                    yield from self.processor.process(iproto, oproto)
+                fut = self.processor.process(iproto, oproto)
+                yield from asyncio.wait_for(fut, self.timeout)
             except ConnectionError:
                 LOG.debug('client has closed the connection')
                 writer.close()
@@ -124,20 +123,25 @@ class TAsyncClient(TClient):
 
     @asyncio.coroutine
     def _req(self, _api, *args, **kwargs):
-        with async_timeout.timeout(self.timeout):
-            args_cls = getattr(self._service, _api + "_args")
-            _kw = args2kwargs(args_cls.thrift_spec, *args)
+        fut = self._req_impl(_api, *args, **kwargs)
+        result = yield from asyncio.wait_for(fut, self.timeout)
+        return result
 
-            kwargs.update(_kw)
-            result_cls = getattr(self._service, _api + "_result")
+    @asyncio.coroutine
+    def _req_impl(self, _api, *args, **kwargs):
+        args_cls = getattr(self._service, _api + "_args")
+        _kw = args2kwargs(args_cls.thrift_spec, *args)
 
-            self._send(_api, **kwargs)
-            yield from self._oprot.trans.drain()
+        kwargs.update(_kw)
+        result_cls = getattr(self._service, _api + "_result")
 
-            # wait result only if non-oneway
-            if not getattr(result_cls, "oneway"):
-                yield from self._iprot.trans.read_frame()
-                return self._recv(_api)
+        self._send(_api, **kwargs)
+        yield from self._oprot.trans.drain()
+
+        # wait result only if non-oneway
+        if not getattr(result_cls, "oneway"):
+            yield from self._iprot.trans.read_frame()
+            return self._recv(_api)
 
     def close(self):
         self._iprot.trans.close()
